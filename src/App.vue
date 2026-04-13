@@ -71,6 +71,11 @@ const buyToken = (tokenId) => {
     coinBank.value -= token.cost;
     token.amount++;
     
+    // Track purchased tokens so they are not lost on Restart Level
+    if (tokenId === 'plus') initialPlusAmount.value++;
+    if (tokenId === 'minus') initialMinusAmount.value++;
+    if (tokenId === 'multiply') initialMultiplyAmount.value++;
+    
     // Add to history so it's not lost on undo
     moveHistory.value.forEach(historyState => {
       const historyToken = historyState.inventory.find(t => t.id === tokenId);
@@ -429,6 +434,7 @@ const resetLevel = () => {
   activeTokenId.value = null;
   moveHistory.value = [];
   animatingCells.value = {};
+  earnedCoins.value = 0;
 };
 
 // Global Developer Cheat
@@ -538,7 +544,7 @@ if (typeof window !== 'undefined') {
       <button class="control-btn" @click="undoMove" :disabled="moveHistory.length === 0 || isWin">
         Undo Last Move
       </button>
-      <button class="control-btn restart" @click="resetLevel">
+      <button class="control-btn restart" @click="resetLevel" :disabled="isWin">
         Restart Level
       </button>
     </div>
