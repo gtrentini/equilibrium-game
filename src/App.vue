@@ -1,12 +1,26 @@
 <script setup>
 import { ref, computed, watch } from 'vue';
+import { Haptics, ImpactStyle } from '@capacitor/haptics';
+
+const gameState = ref('menu');
+const showShop = ref(false);
 
 // Load initial state from localStorage if available
-const savedLevel = localStorage.getItem('equilibrium_level');
-const currentLevel = ref(savedLevel ? parseInt(savedLevel, 10) : 1);
+const savedProfile = localStorage.getItem('equilibrium_profile');
+const defaultProfile = { highestUnlockedLevel: 1, levelStats: {} };
+const playerProfile = ref(savedProfile ? JSON.parse(savedProfile) : defaultProfile);
+const currentLevel = ref(playerProfile.value.highestUnlockedLevel);
 
 const savedCoins = localStorage.getItem('equilibrium_coins');
 const coinBank = ref(savedCoins ? parseInt(savedCoins, 10) : 0);
+
+const reversedLevels = computed(() => {
+  const levels = [];
+  for (let i = playerProfile.value.highestUnlockedLevel; i >= 1; i--) {
+    levels.push(i);
+  }
+  return levels;
+});
 
 // Reactive state
 const grid = ref([]);
@@ -18,11 +32,19 @@ const activeTokenId = ref(null);
 const moveHistory = ref([]);
 const animatingCells = ref({});
 const earnedCoins = ref(0);
+const movesTaken = ref(0);
+const levelPar = ref(0);
+
+const earnedStars = computed(() => {
+  if (movesTaken.value <= levelPar.value) return 3;
+  if (movesTaken.value <= levelPar.value + 2) return 2;
+  return 1;
+});
 
 // Watch for changes to save to localStorage
-watch(currentLevel, (newVal) => {
-  localStorage.setItem('equilibrium_level', newVal.toString());
-});
+watch(playerProfile, (newVal) => {
+  localStorage.setItem('equilibrium_profile', JSON.stringify(newVal));
+}, { deep: true });
 
 watch(coinBank, (newVal) => {
   localStorage.setItem('equilibrium_coins', newVal.toString());
@@ -30,8 +52,8 @@ watch(coinBank, (newVal) => {
 
 // Reactive inventory of playable tokens
 const inventory = ref([
-  { id: 'plus', name: '+1 Ripple', primary: 2, secondary: 1, amount: 0, unlockLevel: 1, cost: 50 },
-  { id: 'minus', name: '-1 Ripple', primary: -2, secondary: -1, amount: 0, unlockLevel: 1, cost: 50 },
+  { id: 'plus', name: '+ Ripple', primary: 2, secondary: 1, amount: 0, unlockLevel: 1, cost: 50 },
+  { id: 'minus', name: '- Ripple', primary: -2, secondary: -1, amount: 0, unlockLevel: 1, cost: 50 },
   { id: 'multiply', name: 'x Multiplier', primary: 0, secondary: -1, amount: 0, unlockLevel: 75, cost: 100 }
 ]);
 
@@ -56,6 +78,18 @@ watch(isWin, (newVal) => {
     const reward = Math.floor(Math.random() * (25 - 10 + 1)) + 10; // Random 10 to 25 coins
     earnedCoins.value = reward;
     coinBank.value += reward;
+
+    const currentStats = playerProfile.value.levelStats[currentLevel.value] || { cleared: false, stars: 0 };
+    const currentStars = earnedStars.value;
+    playerProfile.value.levelStats[currentLevel.value] = {
+      cleared: true,
+      stars: Math.max(currentStats.stars || 0, currentStars)
+    };
+    
+    const next = currentLevel.value + 1;
+    if (next > playerProfile.value.highestUnlockedLevel) {
+      playerProfile.value.highestUnlockedLevel = next;
+    }
   }
 });
 
@@ -175,7 +209,9 @@ const applyMove = (gridState, r, c, token, isReverse) => {
 };
 
 // Core action: apply token to a cell and its neighbors
-const applyToken = (rowIndex, colIndex) => {
+const applyToken = async (rowIndex, colIndex) => {
+  await Haptics.impact({ style: ImpactStyle.Light });
+
   if (isWin.value) return; // Prevent moves after winning
   if (grid.value[rowIndex][colIndex].type === 'void') return; // Ignore void cells
 
@@ -199,6 +235,7 @@ const applyToken = (rowIndex, colIndex) => {
 
   // Deduct the used token from inventory
   token.amount--;
+  movesTaken.value++;
   
   // Optionally auto-deselect if the token runs out
   if (token.amount === 0) {
@@ -334,8 +371,14 @@ const generateLevel = () => {
     
     // Scramble Depth scaling based on localLevel
     const baseScramble = Math.min(35, 2 + Math.floor(localLevel * 1.5));
-    const scrambleDepth = Math.min(playableCellsCount, baseScramble);
+    let scrambleDepth = Math.min(playableCellsCount, baseScramble);
     
+    if (localLevel <= 5) {
+      scrambleDepth = 3;
+    }
+    
+    levelPar.value = scrambleDepth;
+
     plusUsed = 0;
     minusUsed = 0;
     multiplyUsed = 0;
@@ -411,10 +454,17 @@ const generateLevel = () => {
   moveHistory.value = [];
   animatingCells.value = {};
   earnedCoins.value = 0;
+  movesTaken.value = 0;
 };
 
 // Initialize the first level
 generateLevel();
+
+const selectLevel = (lvl) => {
+  currentLevel.value = lvl;
+  generateLevel();
+  gameState.value = 'playing';
+};
 
 const nextLevel = () => {
   currentLevel.value++;
@@ -435,6 +485,11 @@ const resetLevel = () => {
   moveHistory.value = [];
   animatingCells.value = {};
   earnedCoins.value = 0;
+  movesTaken.value = 0;
+};
+
+const rerollLevel = () => {
+  generateLevel();
 };
 
 // Global Developer Cheat
@@ -442,6 +497,9 @@ if (typeof window !== 'undefined') {
   window.dev_setLevel = (level) => {
     if (typeof level === 'number' && level > 0) {
       currentLevel.value = level;
+      if (level > playerProfile.value.highestUnlockedLevel) {
+        playerProfile.value.highestUnlockedLevel = level;
+      }
       generateLevel();
       console.log(`Successfully skipped to Level ${level}!`);
     } else {
@@ -453,100 +511,146 @@ if (typeof window !== 'undefined') {
 
 <template>
   <div class="game-container">
-    <header>
-      <div class="header-content">
-        <h1>Equilibrium</h1>
+    <!-- Title Screen -->
+    <div v-if="gameState === 'menu'" class="title-screen">
+      <h1>Equilibrium</h1>
+      <button class="start-btn" @click="gameState = 'levelSelect'">Start Game</button>
+    </div>
+
+    <!-- Level Select -->
+    <div v-if="gameState === 'levelSelect'" class="level-select-wrapper">
+      <header>
+        <h1>Select Level</h1>
+      </header>
+      <div class="level-grid">
+        <button
+          v-for="lvl in reversedLevels"
+          :key="lvl"
+          class="level-btn"
+          :class="{ cleared: playerProfile.levelStats[lvl]?.cleared }"
+          @click="selectLevel(lvl)"
+        >
+          <span class="lvl-number">Level {{ lvl }}</span>
+          <span class="lvl-stars" v-if="playerProfile.levelStats[lvl]?.cleared">[{{ '⭐'.repeat(playerProfile.levelStats[lvl]?.stars || 0) }}{{ '☆'.repeat(3 - (playerProfile.levelStats[lvl]?.stars || 0)) }}]</span>
+        </button>
+      </div>
+      <button class="back-btn" @click="gameState = 'menu'">Back to Menu</button>
+    </div>
+
+    <!-- Game UI -->
+    <div v-if="gameState === 'playing'" class="game-ui-wrapper">
+      <div class="app-bar">
+        <button class="quit-btn" @click="gameState = 'levelSelect'">⬅️ Map</button>
         <div class="coin-bank">
           <span class="coin-icon">🪙</span>
           {{ coinBank }}
         </div>
       </div>
-      <p>Balance the grid. Make every cell equal to 0.</p>
-      <div class="level-indicator">Level {{ currentLevel }}</div>
-    </header>
-
-    <!-- Win State Overlay -->
-    <div v-if="isWin" class="win-message">
-      <h2>Level Complete!</h2>
-      <p>Perfect harmony achieved.</p>
-      <div class="reward">
-        <span class="reward-text">+{{ earnedCoins }} Coins!</span>
-      </div>
-      <button @click="nextLevel">Next Level</button>
-    </div>
-
-    <div class="panels-container">
-      <!-- Inventory UI -->
-      <div class="inventory">
-        <h2>Tokens</h2>
-        <div class="tokens">
-          <button
-            v-for="token in visibleInventory"
-            :key="token.id"
-            class="token-btn"
-            :class="{ active: activeTokenId === token.id, disabled: token.amount === 0 }"
-            @click="selectToken(token.id)"
-            :disabled="token.amount === 0"
-          >
-            <span class="token-name">{{ token.name }}</span>
-            <span class="token-amount">x{{ token.amount }}</span>
-          </button>
+      <header>
+        <p v-if="currentLevel <= 10">Balance the grid. Make every cell equal to 0.</p>
+        <div class="level-indicator">
+          Level {{ currentLevel }}
+          <span class="par-indicator"> | Moves: {{ movesTaken }} / Par: {{ levelPar }}</span>
         </div>
-      </div>
+      </header>
 
-      <!-- Shop UI -->
-      <div class="shop">
-        <h2>Shop</h2>
-        <div class="shop-items">
-          <button
-            v-for="token in visibleInventory"
-            :key="'shop-' + token.id"
-            class="shop-btn"
-            @click="buyToken(token.id)"
-            :disabled="coinBank < token.cost"
-          >
-            <span class="shop-title">Buy {{ token.name.split(' ')[0] }}</span>
-            <span class="shop-cost">{{ token.cost }} 🪙</span>
-          </button>
+      <!-- Win State Overlay -->
+      <div v-if="isWin" class="win-message">
+        <h2>Level Complete!</h2>
+        <div class="stars-display">
+          {{ '⭐'.repeat(earnedStars) }}{{ '☆'.repeat(3 - earnedStars) }}
         </div>
+        <p>Perfect harmony achieved.</p>
+        <p class="stats-text">Moves: {{ movesTaken }} / Par: {{ levelPar }}</p>
+        <div class="reward">
+          <span class="reward-text">+{{ earnedCoins }} Coins!</span>
+        </div>
+        <button @click="nextLevel">Next Level</button>
       </div>
-    </div>
 
-    <!-- The Grid -->
-    <div class="grid-wrapper">
-      <div class="grid" :class="{ 'game-won': isWin }" :style="{ gridTemplateColumns: `repeat(${grid.length}, 1fr)` }">
-        <template v-for="(row, rIndex) in grid" :key="rIndex">
-          <div
-            v-for="(cell, cIndex) in row"
-            :key="cell.id"
-            class="cell"
-            :class="{
-              'void': cell.type === 'void',
-              'inverter': cell.type === 'inverter',
-              'quantum': cell.type === 'quantum_a' || cell.type === 'quantum_b',
-              'zero': cell.value === 0 && cell.type !== 'void',
-              'positive': cell.value > 0 && cell.type !== 'void',
-              'negative': cell.value < 0 && cell.type !== 'void',
-              'animating': animatingCells[cell.id]
-            }"
-            @click="cell.type !== 'void' ? applyToken(rIndex, cIndex) : null"
-          >
-            {{ cell.type !== 'void' ? cell.value : '' }}
-            <div v-if="cell.type === 'inverter'" class="inverter-icon">🔃</div>
-            <div v-if="cell.type === 'quantum_a' || cell.type === 'quantum_b'" class="quantum-icon">⚛️</div>
+      <div class="panels-container">
+        <!-- Inventory UI -->
+        <div class="inventory">
+          <div class="tokens">
+            <button
+              v-for="token in visibleInventory"
+              :key="token.id"
+              class="token-btn"
+              :class="{ active: activeTokenId === token.id, disabled: token.amount === 0 }"
+              @click="selectToken(token.id)"
+              :disabled="token.amount === 0"
+            >
+              <span class="token-name">{{ token.name }}</span>
+              <span class="token-amount">x{{ token.amount }}</span>
+            </button>
           </div>
-        </template>
+        </div>
       </div>
-    </div>
 
-    <!-- Control Actions -->
-    <div class="controls">
-      <button class="control-btn" @click="undoMove" :disabled="moveHistory.length === 0 || isWin">
-        Undo Last Move
-      </button>
-      <button class="control-btn restart" @click="resetLevel" :disabled="isWin">
-        Restart Level
-      </button>
+      <!-- Shop Modal Overlay -->
+      <div v-if="showShop" class="shop-modal-overlay">
+        <div class="shop-modal-content">
+          <div class="shop-modal-header">
+            <h2>Shop</h2>
+            <button class="close-shop-btn" @click="showShop = false">Close</button>
+          </div>
+          <div class="shop-items">
+            <button
+              v-for="token in visibleInventory"
+              :key="'shop-' + token.id"
+              class="shop-btn"
+              @click="buyToken(token.id)"
+              :disabled="coinBank < token.cost"
+            >
+              <span class="shop-title">Buy {{ token.name.split(' ')[0] }}</span>
+              <span class="shop-cost">{{ token.cost }} 🪙</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- The Grid -->
+      <div class="grid-wrapper">
+        <div class="grid" :class="{ 'game-won': isWin }" :style="{ gridTemplateColumns: `repeat(${grid.length}, 1fr)` }">
+          <template v-for="(row, rIndex) in grid" :key="rIndex">
+            <div
+              v-for="(cell, cIndex) in row"
+              :key="cell.id"
+              class="cell"
+              :class="{
+                'void': cell.type === 'void',
+                'inverter': cell.type === 'inverter',
+                'quantum': cell.type === 'quantum_a' || cell.type === 'quantum_b',
+                'zero': cell.value === 0 && cell.type !== 'void',
+                'positive': cell.value > 0 && cell.type !== 'void',
+                'negative': cell.value < 0 && cell.type !== 'void',
+                'animating': animatingCells[cell.id]
+              }"
+              @click="cell.type !== 'void' ? applyToken(rIndex, cIndex) : null"
+            >
+              {{ cell.type !== 'void' ? cell.value : '' }}
+              <div v-if="cell.type === 'inverter'" class="inverter-icon">🔃</div>
+              <div v-if="cell.type === 'quantum_a' || cell.type === 'quantum_b'" class="quantum-icon">⚛️</div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Control Actions -->
+      <div class="controls">
+        <button class="control-btn" @click="undoMove" :disabled="moveHistory.length === 0 || isWin">
+          ↩️ Undo
+        </button>
+        <button class="control-btn restart" @click="resetLevel" :disabled="isWin">
+          🔄 Reset
+        </button>
+        <button class="control-btn reroll" @click="rerollLevel" :disabled="isWin">
+          🎲 Scrap
+        </button>
+        <button class="control-btn shop-btn-control" @click="showShop = true">
+          🛒 Shop
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -560,7 +664,7 @@ if (typeof window !== 'undefined') {
   background-color: #121212;
   color: #e0e0e0;
   min-height: 100vh;
-  padding: 2rem;
+  padding: clamp(0.5rem, 2vw, 1rem);
   box-sizing: border-box;
 }
 
@@ -578,7 +682,8 @@ header {
 }
 
 h1 {
-  font-size: 3rem;
+  font-size: clamp(1.8rem, 6vw, 3rem);
+  line-height:1.2;
   margin: 0;
   background: linear-gradient(45deg, #00d2ff 0%, #3a7bd5 100%);
   -webkit-background-clip: text;
@@ -617,6 +722,60 @@ p {
   letter-spacing: 2px;
 }
 
+.par-indicator {
+  color: #a0a0a0;
+  font-size: 1rem;
+  font-weight: normal;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.app-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: clamp(0.25rem, 1.5vw, 0.5rem) clamp(0.5rem, 2vw, 1rem);
+  margin-bottom: 1rem;
+}
+
+.quit-btn {
+  padding: clamp(0.4rem, 1.5vw, 0.8rem) clamp(1rem, 3vw, 2rem);
+  font-size: 1.2rem;
+  background: #333;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: transform 0.2s, box-shadow 0.2s;
+  min-height: 50px;
+}
+
+.quit-btn:hover {
+  transform: translateY(-2px);
+  background: #555;
+}
+
+.open-shop-btn {
+  padding: 0.8rem 2rem;
+  font-size: 1.2rem;
+  background: linear-gradient(45deg, #10b981 0%, #059669 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+  transition: transform 0.2s, box-shadow 0.2s;
+  min-height: 50px;
+}
+
+.open-shop-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
+}
+
 .panels-container {
   display: flex;
   gap: 1.5rem;
@@ -627,26 +786,13 @@ p {
   max-width: 650px;
 }
 
-.inventory, .shop {
-  background: #1e1e1e;
-  padding: 1.5rem;
-  border-radius: 12px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+.inventory {
   text-align: center;
   flex: 1;
   min-width: 250px;
 }
 
-.inventory h2, .shop h2 {
-  margin-top: 0;
-  margin-bottom: 1rem;
-  font-size: 1.2rem;
-  color: #888;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-
-.tokens, .shop-items {
+.tokens {
   display: flex;
   gap: 1rem;
   justify-content: center;
@@ -665,6 +811,7 @@ p {
   gap: 0.5rem;
   transition: all 0.2s ease;
   min-width: 100px;
+  min-height: 50px;
 }
 
 .token-btn:hover:not(.disabled) {
@@ -692,6 +839,69 @@ p {
 .token-amount {
   font-size: 0.9rem;
   color: #aaa;
+}
+
+.shop-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(5px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.shop-modal-content {
+  background: #1e1e1e;
+  padding: 2rem;
+  border-radius: 16px;
+  border: 1px solid #ffd700;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8), 0 0 20px rgba(255, 215, 0, 0.2);
+  width: 90%;
+  max-width: 500px;
+  text-align: center;
+}
+
+.shop-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.shop-modal-header h2 {
+  margin: 0;
+  color: #ffd700;
+  font-size: 1.8rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.close-shop-btn {
+  background: #333;
+  color: #fff;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background 0.2s;
+  min-height: 50px;
+}
+
+.close-shop-btn:hover {
+  background: #555;
+}
+
+.shop-items {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
 }
 
 .shop-btn {
@@ -724,13 +934,16 @@ p {
 
 .grid-wrapper {
   perspective: 1000px;
+  width: 100%;
+  max-width: 450px;
+  margin: 0 auto;
 }
 
 .grid {
   display: grid;
-  gap: 8px;
+  gap: clamp(4px, 1vw, 8px);
   background: #1e1e1e;
-  padding: 16px;
+  padding: clamp(8px, 2vw, 16px);
   border-radius: 12px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
   transition: filter 0.5s ease, transform 0.5s ease;
@@ -742,8 +955,9 @@ p {
 }
 
 .cell {
-  width: 60px;
-  height: 60px;
+  aspect-ratio: 1 / 1;
+  width: 100%;
+  height: auto;
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -894,6 +1108,18 @@ p {
   margin-top: 0;
 }
 
+.stars-display {
+  font-size: 3rem;
+  margin: 1rem 0;
+  letter-spacing: 0.5rem;
+}
+
+.stats-text {
+  font-size: 1.1rem;
+  color: #ccc;
+  margin: 0.5rem 0;
+}
+
 .win-message p {
   color: #fff;
   margin: 0.5rem 0;
@@ -941,19 +1167,23 @@ p {
 .controls {
   margin-top: 2rem;
   display: flex;
-  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: clamp(0.25rem, 1.5vw, 0.5rem);
+  width: 100%;
 }
 
 .control-btn {
   background: #2a2a2a;
   border: 1px solid #555;
   color: #e0e0e0;
-  padding: 0.6rem 1.2rem;
+  padding: 0.5rem clamp(0.5rem, 2vw, 1rem);
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s ease;
-  font-size: 1rem;
+  font-size: clamp(0.85rem, 2.5vw, 1rem);
   font-weight: 500;
+  min-height: 44px;
 }
 
 .control-btn:hover:not(:disabled) {
@@ -977,5 +1207,121 @@ p {
   background: rgba(248, 113, 113, 0.2);
   border-color: #ef4444;
   color: #fecaca;
+}
+
+/* Title Screen Styles */
+.title-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  width: 100%;
+  gap: 2rem;
+  margin-top: 10vh;
+}
+
+.title-screen h1 {
+  font-size: clamp(2.5rem, 10vw, 4.5rem);
+  line-height:1.2;
+  margin-bottom: 1rem;
+}
+
+.start-btn {
+  padding: 1.2rem 3.5rem;
+  font-size: 1.5rem;
+  background: linear-gradient(45deg, #00d2ff 0%, #3a7bd5 100%);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.2s ease;
+  box-shadow: 0 4px 15px rgba(0, 210, 255, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  min-height: 50px;
+}
+
+.start-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 25px rgba(0, 210, 255, 0.5);
+}
+
+.game-ui-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+/* Level Select Styles */
+.level-select-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  gap: 2rem;
+  margin-top: 5vh;
+}
+
+.level-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+  max-width: 450px;
+}
+
+.level-btn {
+  min-width: 100px;
+  height: auto;
+  min-height: 60px;
+  padding: 0.5rem 1rem;
+  border-radius: 12px;
+  background: #2a2a2a;
+  color: #fff;
+  border: 2px solid #555;
+  font-size: 1.2rem;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+}
+
+.level-btn.cleared {
+  border-color: #00d2ff;
+  background: rgba(0, 210, 255, 0.1);
+}
+
+.level-btn:hover {
+  transform: translateY(-2px);
+  border-color: #00d2ff;
+}
+
+.lvl-stars {
+  font-size: 0.9rem;
+  white-space: pre;
+}
+
+.back-btn {
+  padding: clamp(0.4rem, 1.5vw, 0.8rem) clamp(1rem, 3vw, 2rem);
+  font-size: 1.2rem;
+  background: #333;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.2s ease;
+  min-height: 50px;
+}
+
+.back-btn:hover {
+  background: #555;
 }
 </style>
