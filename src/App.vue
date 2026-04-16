@@ -31,6 +31,18 @@ const playSound = (type) => {
     );
     osc.start();
     osc.stop(audioCtx.currentTime + 0.15);
+  } else if (type === "purchase") {
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+    osc.frequency.setValueAtTime(1108.73, audioCtx.currentTime + 0.05);
+    osc.frequency.setValueAtTime(1318.51, audioCtx.currentTime + 0.1);
+    gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(
+      0.01,
+      audioCtx.currentTime + 0.3,
+    );
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.3);
   } else if (type === "win") {
     osc.type = "triangle";
     osc.frequency.setValueAtTime(440, audioCtx.currentTime);
@@ -45,13 +57,56 @@ const playSound = (type) => {
 
 const gameState = ref("menu");
 const showShop = ref(false);
+const shopFeedback = ref("");
+
+const showDevMenu = ref(false);
+let devTapCount = 0;
+let devTapTimer = null;
+const handleDevTap = () => {
+  devTapCount++;
+  clearTimeout(devTapTimer);
+  devTapTimer = setTimeout(() => {
+    devTapCount = 0;
+  }, 1500);
+  if (devTapCount >= 5) {
+    showDevMenu.value = true;
+    devTapCount = 0;
+  }
+};
+const devForceWin = () => {
+  grid.value.forEach((row) =>
+    row.forEach((cell) => {
+      if (cell.type !== "void") cell.value = 0;
+    }),
+  );
+  showDevMenu.value = false;
+};
+const devAddCoins = () => {
+  coinBank.value += 1000;
+};
+const devResetAll = () => {
+  playerProfile.value = {
+    highestUnlockedLevel: 1,
+    levelStats: {},
+    daily: { lastWinDate: null, streak: 0 },
+  };
+  coinBank.value = 0;
+  currentLevel.value = 1;
+  isDailyMode.value = false;
+  generateLevel();
+  showDevMenu.value = false;
+};
+
+const devTargetLevel = ref(1);
+const devGoToLevel = () => { if (devTargetLevel.value > 0) { currentLevel.value = devTargetLevel.value; if (devTargetLevel.value > playerProfile.value.highestUnlockedLevel) { playerProfile.value.highestUnlockedLevel = devTargetLevel.value; } isDailyMode.value = false; generateLevel(); showDevMenu.value = false; } };
 
 // Load initial state from localStorage if available
 const savedProfile = localStorage.getItem("equilibrium_profile");
-const defaultProfile = { highestUnlockedLevel: 1, levelStats: {}, daily: { lastWinDate: null, streak: 0 } };
+const defaultProfile = { highestUnlockedLevel: 1, levelStats: {}, daily: { lastWinDate: null, streak: 0 }, themes: { unlocked: ['default'], active: 'default' } };
 const playerProfile = ref(
   savedProfile ? JSON.parse(savedProfile) : defaultProfile,
 );
+if (!playerProfile.value.themes) { playerProfile.value.themes = { unlocked: ['default'], active: 'default' }; }
 const currentLevel = ref(playerProfile.value.highestUnlockedLevel);
 
 const savedCoins = localStorage.getItem("equilibrium_coins");
@@ -147,6 +202,10 @@ const isWin = computed(() => {
 
 const isDailyMode = ref(false);
 
+const hasPlayedDailyToday = computed(() => {
+  return playerProfile.value.daily?.lastWinDate === getTodayString();
+});
+
 const formattedDailyDate = computed(() => {
   return new Date().toLocaleDateString("en-US", {
     month: "short",
@@ -160,8 +219,12 @@ const getDailySeed = () => {
   return parseInt(`${d.getFullYear()}${d.getMonth()}${d.getDate()}`);
 };
 
-const getTodayString = () => new Date().toISOString().split('T')[0];
-const getYesterdayString = () => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().split('T')[0]; };
+const getTodayString = () => new Date().toISOString().split("T")[0];
+const getYesterdayString = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().split("T")[0];
+};
 
 // Seeded Random Number Generator
 const mulberry32 = (a) => {
@@ -178,12 +241,15 @@ watch(isWin, (newVal) => {
   if (newVal) {
     playSound("win");
     let reward = Math.floor(Math.random() * (25 - 10 + 1)) + 10;
-    if (isDailyMode.value) { reward += 100; }
+    if (isDailyMode.value) {
+      reward += 100;
+    }
     earnedCoins.value = reward;
     coinBank.value += reward;
 
     if (isDailyMode.value) {
-      if (!playerProfile.value.daily) playerProfile.value.daily = { lastWinDate: null, streak: 0 };
+      if (!playerProfile.value.daily)
+        playerProfile.value.daily = { lastWinDate: null, streak: 0 };
       const todayStr = getTodayString();
       if (playerProfile.value.daily.lastWinDate !== todayStr) {
         if (playerProfile.value.daily.lastWinDate === getYesterdayString()) {
@@ -195,19 +261,23 @@ watch(isWin, (newVal) => {
       }
     }
 
-    const currentStats = playerProfile.value.levelStats[currentLevel.value] || {
-      cleared: false,
-      stars: 0,
-    };
-    const currentStars = earnedStars.value;
-    playerProfile.value.levelStats[currentLevel.value] = {
-      cleared: true,
-      stars: Math.max(currentStats.stars || 0, currentStars),
-    };
+    if (!isDailyMode.value) {
+      const currentStats = playerProfile.value.levelStats[
+        currentLevel.value
+      ] || {
+        cleared: false,
+        stars: 0,
+      };
+      const currentStars = earnedStars.value;
+      playerProfile.value.levelStats[currentLevel.value] = {
+        cleared: true,
+        stars: Math.max(currentStats.stars || 0, currentStars),
+      };
 
-    const next = currentLevel.value + 1;
-    if (next > playerProfile.value.highestUnlockedLevel) {
-      playerProfile.value.highestUnlockedLevel = next;
+      const next = currentLevel.value + 1;
+      if (next > playerProfile.value.highestUnlockedLevel) {
+        playerProfile.value.highestUnlockedLevel = next;
+      }
     }
   }
 });
@@ -223,6 +293,11 @@ const buyToken = (tokenId) => {
   if (token && coinBank.value >= token.cost) {
     coinBank.value -= token.cost;
     token.amount++;
+    playSound("purchase");
+    shopFeedback.value = "Purchased " + token.name + "!";
+    setTimeout(() => {
+      shopFeedback.value = "";
+    }, 2000);
 
     // Track purchased tokens so they are not lost on Restart Level
     if (tokenId === "plus") initialPlusAmount.value++;
@@ -238,6 +313,9 @@ const buyToken = (tokenId) => {
     });
   }
 };
+
+const availableThemes = ref([ { id: 'default', name: 'Dark Void (Default)', cost: 0 }, { id: 'neon', name: 'Neon Cyber', cost: 2000 }, { id: 'retro', name: 'Retro Arcade', cost: 2000 } ]);
+const setPlayerTheme = (id) => { if (playerProfile.value.themes.unlocked.includes(id)) { playerProfile.value.themes.active = id; playSound('click'); } else { const theme = availableThemes.value.find(t => t.id === id); if (coinBank.value >= theme.cost) { coinBank.value -= theme.cost; playerProfile.value.themes.unlocked.push(id); playerProfile.value.themes.active = id; playSound('purchase'); shopFeedback.value = "Unlocked " + theme.name + "!"; setTimeout(() => { shopFeedback.value = ""; }, 2000); } } };
 
 // Triggers visual animation class on a cell
 const triggerAnimation = (r, c, delay = 0) => {
@@ -685,28 +763,55 @@ if (typeof window !== "undefined") {
   };
 
   window.dev_winLevel = () => {
-    grid.value.forEach(row => {
-      row.forEach(cell => {
-        if (cell.type !== 'void') cell.value = 0;
+    grid.value.forEach((row) => {
+      row.forEach((cell) => {
+        if (cell.type !== "void") cell.value = 0;
       });
     });
-    console.log('Level auto-completed! The win state should now trigger.');
+    console.log("Level auto-completed! The win state should now trigger.");
   };
 }
 </script>
 
 <template>
-  <div class="game-container">
+  <div
+    class="game-container"
+    :class="playerProfile.themes?.active || 'default'"
+  >
     <Transition name="page" mode="out-in">
       <div v-if="gameState === 'menu'" class="title-screen">
         <h1>Equilibrium</h1>
         <button class="start-btn" @click="gameState = 'levelSelect'">
           Start Game
         </button>
-        <button class="start-btn daily-btn" @click="startDailyChallenge">
-          Daily Challenge 📅
-          <span v-if="playerProfile.daily?.streak > 0" style="font-size: 1rem; display: block; color: #ffd700; margin-top: 0.2rem;">🔥 Streak: {{ playerProfile.daily?.streak }}</span>
-        </button>
+        <div
+          style="
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.5rem;
+          "
+        >
+          <button
+            class="start-btn daily-btn"
+            @click="startDailyChallenge"
+            :disabled="hasPlayedDailyToday"
+          >
+            {{
+              hasPlayedDailyToday ? "Daily Complete ✅" : "Daily Challenge 📅"
+            }}
+          </button>
+          <span
+            v-if="playerProfile.daily?.streak > 0"
+            style="
+              font-size: 1.1rem;
+              color: #ffd700;
+              font-weight: bold;
+              text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+            "
+            >🔥 Streak: {{ playerProfile.daily?.streak }}</span
+          >
+        </div>
       </div>
 
       <div v-else-if="gameState === 'levelSelect'" class="level-select-wrapper">
@@ -748,7 +853,7 @@ if (typeof window !== "undefined") {
           >
             ⬅️ Map
           </button>
-          <div class="coin-bank">
+          <div class="coin-bank" @click="handleDevTap">
             <span class="coin-icon">🪙</span>
             {{ coinBank }}
           </div>
@@ -764,7 +869,8 @@ if (typeof window !== "undefined") {
             >
             <span v-else>Level {{ currentLevel }}</span>
             <span class="par-indicator">
-              Moves: {{ movesTaken }} / Par: {{ levelPar }}</span>
+              Moves: {{ movesTaken }} / Par: {{ levelPar }}</span
+            >
           </div>
         </header>
 
@@ -809,6 +915,12 @@ if (typeof window !== "undefined") {
                   Close
                 </button>
               </div>
+              <div
+                v-if="shopFeedback"
+                style="color: #4ade80; margin-bottom: 1rem; font-weight: bold"
+              >
+                {{ shopFeedback }}
+              </div>
               <div class="shop-items">
                 <button
                   v-for="token in visibleInventory"
@@ -821,6 +933,50 @@ if (typeof window !== "undefined") {
                     >Buy {{ token.name.split(" ")[0] }}</span
                   >
                   <span class="shop-cost">{{ token.cost }} 🪙</span>
+                </button>
+              </div>
+
+              <h3
+                style="
+                  color: #ffd700;
+                  margin-top: 2rem;
+                  margin-bottom: 1rem;
+                  text-transform: uppercase;
+                "
+              >
+                Cosmetic Themes
+              </h3>
+              <div class="shop-items">
+                <button
+                  v-for="theme in availableThemes"
+                  :key="'theme-' + theme.id"
+                  class="shop-btn"
+                  @click="setPlayerTheme(theme.id)"
+                  :disabled="
+                    !playerProfile.themes?.unlocked.includes(theme.id) &&
+                    coinBank < theme.cost
+                  "
+                  :style="
+                    playerProfile.themes?.active === theme.id
+                      ? 'border-color: #00d2ff; background: rgba(0, 210, 255, 0.1);'
+                      : ''
+                  "
+                >
+                  <span class="shop-title">{{ theme.name }}</span>
+                  <span
+                    class="shop-cost"
+                    v-if="!playerProfile.themes?.unlocked.includes(theme.id)"
+                    >{{ theme.cost }} 🪙</span
+                  >
+                  <span
+                    class="shop-cost"
+                    v-else-if="playerProfile.themes?.active === theme.id"
+                    style="color: #00d2ff"
+                    >Active</span
+                  >
+                  <span class="shop-cost" v-else style="color: #a0a0a0"
+                    >Equip</span
+                  >
                 </button>
               </div>
             </div>
@@ -896,6 +1052,41 @@ if (typeof window !== "undefined") {
             :disabled="isWin"
           >
             🛒 Shop
+          </button>
+        </div>
+      </div>
+    </Transition>
+
+    <Transition name="modal">
+      <div v-if="showDevMenu" class="shop-modal-overlay" style="z-index: 999">
+        <div class="shop-modal-content" style="border-color: #ff0055">
+          <h2 style="color: #ff0055">🛠️ Dev Menu</h2>
+          <div
+            style="
+              display: flex;
+              flex-direction: column;
+              gap: 1rem;
+              margin: 2rem 0;
+            "
+          >
+            <div style="display: flex; gap: 0.5rem;">
+<input type="number" v-model="devTargetLevel" style="width: 80px; text-align: center; background: #333; color: white; border: 1px solid #555; border-radius: 6px; font-size: 1.2rem;" min="1" />
+<button class="shop-btn" style="flex: 1; min-height: 44px; padding: 0.5rem;" @click="devGoToLevel">Jump to Level</button>
+</div>
+            <button class="shop-btn" @click="devForceWin">
+              Force Win (Current Level)
+            </button>
+            <button class="shop-btn" @click="devAddCoins">+1000 Coins</button>
+            <button
+              class="shop-btn"
+              style="border-color: #ff0055; color: #ffcaea"
+              @click="devResetAll"
+            >
+              ⚠️ HARD RESET ALL DATA
+            </button>
+          </div>
+          <button class="close-shop-btn" @click="showDevMenu = false">
+            Close
           </button>
         </div>
       </div>
@@ -1533,6 +1724,14 @@ p {
   box-shadow: 0 8px 25px rgba(0, 210, 255, 0.5);
 }
 
+.start-btn:disabled {
+  opacity: 0.5;
+  filter: grayscale(100%);
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 .game-ui-wrapper {
   display: flex;
   flex-direction: column;
@@ -1660,4 +1859,21 @@ p {
   justify-content: center;
   margin-bottom: 1.5rem;
 }
+
+.game-container.neon { background-color: #050510; color: #00ffff; }
+.game-container.neon h1 { background: linear-gradient(45deg, #ff00ff 0%, #00ffff 100%); -webkit-background-clip: text; background-clip: text; }
+.game-container.neon .grid { background: #0a0a1a; box-shadow: 0 0 20px rgba(0, 255, 255, 0.2), inset 0 0 0 2px #ff00ff; background-image: linear-gradient(rgba(0, 255, 255, 0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 255, 255, 0.1) 1px, transparent 1px); background-size: 20px 20px; }
+.game-container.neon .cell { background: rgba(0, 0, 0, 0.5); border: 1px solid #00ffff; box-shadow: inset 0 0 10px rgba(0, 255, 255, 0.2); }
+.game-container.neon .cell.zero { background: rgba(255, 0, 255, 0.2); color: #ff00ff; border-color: #ff00ff; box-shadow: 0 0 15px rgba(255, 0, 255, 0.5); }
+.game-container.neon .cell::after { display: none; }
+.game-container.neon .level-btn.cleared { border-color: #ff00ff; background: rgba(255, 0, 255, 0.1); }
+
+.game-container.retro { background-color: #2b2b2b; font-family: 'Courier New', Courier, monospace; }
+.game-container.retro h1 { background: none; -webkit-text-fill-color: #ffd700; text-shadow: 4px 4px 0px #ff0055; letter-spacing: 0; }
+.game-container.retro .grid { background: #111; border: 4px solid #ffd700; border-radius: 0; box-shadow: 8px 8px 0px #ff0055; background-image: none; }
+.game-container.retro .cell { border-radius: 0; background: #222; border: 2px solid #555; box-shadow: inset -2px -2px 0px rgba(0,0,0,0.5); font-weight: bold; }
+.game-container.retro .cell.zero { background: #ffd700; color: #111; border-color: #fff; box-shadow: none; }
+.game-container.retro .cell::after { display: none; }
+.game-container.retro .control-btn { border-radius: 0; border: 2px solid #fff; box-shadow: 2px 2px 0px #888; }
+.game-container.retro .start-btn { border-radius: 0; background: #ff0055; box-shadow: 4px 4px 0px #ffd700; }
 </style>
