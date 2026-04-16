@@ -1,17 +1,60 @@
 <script setup>
-import { ref, computed, watch } from 'vue';
-import { Haptics, ImpactStyle } from '@capacitor/haptics';
+import { ref, computed, watch } from "vue";
+import { Haptics, ImpactStyle } from "@capacitor/haptics";
 
-const gameState = ref('menu');
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const playSound = (type) => {
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  const osc = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  osc.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+
+  if (type === "click") {
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(600, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(300, audioCtx.currentTime + 0.1);
+    gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(
+      0.01,
+      audioCtx.currentTime + 0.1,
+    );
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.1);
+  } else if (type === "special") {
+    osc.type = "square";
+    osc.frequency.setValueAtTime(200, audioCtx.currentTime);
+    gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(
+      0.01,
+      audioCtx.currentTime + 0.15,
+    );
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.15);
+  } else if (type === "win") {
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+    osc.frequency.setValueAtTime(554.37, audioCtx.currentTime + 0.1);
+    osc.frequency.setValueAtTime(659.25, audioCtx.currentTime + 0.2);
+    gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gainNode.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.5);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.5);
+  }
+};
+
+const gameState = ref("menu");
 const showShop = ref(false);
 
 // Load initial state from localStorage if available
-const savedProfile = localStorage.getItem('equilibrium_profile');
-const defaultProfile = { highestUnlockedLevel: 1, levelStats: {} };
-const playerProfile = ref(savedProfile ? JSON.parse(savedProfile) : defaultProfile);
+const savedProfile = localStorage.getItem("equilibrium_profile");
+const defaultProfile = { highestUnlockedLevel: 1, levelStats: {}, daily: { lastWinDate: null, streak: 0 } };
+const playerProfile = ref(
+  savedProfile ? JSON.parse(savedProfile) : defaultProfile,
+);
 const currentLevel = ref(playerProfile.value.highestUnlockedLevel);
 
-const savedCoins = localStorage.getItem('equilibrium_coins');
+const savedCoins = localStorage.getItem("equilibrium_coins");
 const coinBank = ref(savedCoins ? parseInt(savedCoins, 10) : 0);
 
 const reversedLevels = computed(() => {
@@ -42,50 +85,126 @@ const earnedStars = computed(() => {
 });
 
 // Watch for changes to save to localStorage
-watch(playerProfile, (newVal) => {
-  localStorage.setItem('equilibrium_profile', JSON.stringify(newVal));
-}, { deep: true });
+watch(
+  playerProfile,
+  (newVal) => {
+    localStorage.setItem("equilibrium_profile", JSON.stringify(newVal));
+  },
+  { deep: true },
+);
 
 watch(coinBank, (newVal) => {
-  localStorage.setItem('equilibrium_coins', newVal.toString());
+  localStorage.setItem("equilibrium_coins", newVal.toString());
 });
 
 // Reactive inventory of playable tokens
 const inventory = ref([
-  { id: 'plus', name: '+ Ripple', primary: 2, secondary: 1, amount: 0, unlockLevel: 1, cost: 50 },
-  { id: 'minus', name: '- Ripple', primary: -2, secondary: -1, amount: 0, unlockLevel: 1, cost: 50 },
-  { id: 'multiply', name: 'x Multiplier', primary: 0, secondary: -1, amount: 0, unlockLevel: 75, cost: 100 }
+  {
+    id: "plus",
+    name: "+ Ripple",
+    primary: 2,
+    secondary: 1,
+    amount: 0,
+    unlockLevel: 1,
+    cost: 50,
+  },
+  {
+    id: "minus",
+    name: "- Ripple",
+    primary: -2,
+    secondary: -1,
+    amount: 0,
+    unlockLevel: 1,
+    cost: 50,
+  },
+  {
+    id: "multiply",
+    name: "x Multiplier",
+    primary: 0,
+    secondary: -1,
+    amount: 0,
+    unlockLevel: 75,
+    cost: 100,
+  },
 ]);
 
 const visibleInventory = computed(() => {
-  return inventory.value.filter(t => currentLevel.value >= t.unlockLevel);
+  return inventory.value.filter((t) => currentLevel.value >= t.unlockLevel);
 });
 
 // Computed property to find the currently active token object
 const activeToken = computed(() => {
-  return inventory.value.find(t => t.id === activeTokenId.value);
+  return inventory.value.find((t) => t.id === activeTokenId.value);
 });
 
 // Win state condition: all non-void cells equal 0
 const isWin = computed(() => {
   if (grid.value.length === 0) return false;
-  return grid.value.every(row => row.every(cell => cell.type === 'void' || cell.value === 0));
+  return grid.value.every((row) =>
+    row.every((cell) => cell.type === "void" || cell.value === 0),
+  );
 });
+
+const isDailyMode = ref(false);
+
+const formattedDailyDate = computed(() => {
+  return new Date().toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+});
+
+const getDailySeed = () => {
+  const d = new Date();
+  return parseInt(`${d.getFullYear()}${d.getMonth()}${d.getDate()}`);
+};
+
+const getTodayString = () => new Date().toISOString().split('T')[0];
+const getYesterdayString = () => { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().split('T')[0]; };
+
+// Seeded Random Number Generator
+const mulberry32 = (a) => {
+  return function () {
+    var t = (a += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
 
 // Award coins upon winning
 watch(isWin, (newVal) => {
   if (newVal) {
-    const reward = Math.floor(Math.random() * (25 - 10 + 1)) + 10; // Random 10 to 25 coins
+    playSound("win");
+    let reward = Math.floor(Math.random() * (25 - 10 + 1)) + 10;
+    if (isDailyMode.value) { reward += 100; }
     earnedCoins.value = reward;
     coinBank.value += reward;
 
-    const currentStats = playerProfile.value.levelStats[currentLevel.value] || { cleared: false, stars: 0 };
+    if (isDailyMode.value) {
+      if (!playerProfile.value.daily) playerProfile.value.daily = { lastWinDate: null, streak: 0 };
+      const todayStr = getTodayString();
+      if (playerProfile.value.daily.lastWinDate !== todayStr) {
+        if (playerProfile.value.daily.lastWinDate === getYesterdayString()) {
+          playerProfile.value.daily.streak++;
+        } else {
+          playerProfile.value.daily.streak = 1;
+        }
+        playerProfile.value.daily.lastWinDate = todayStr;
+      }
+    }
+
+    const currentStats = playerProfile.value.levelStats[currentLevel.value] || {
+      cleared: false,
+      stars: 0,
+    };
     const currentStars = earnedStars.value;
     playerProfile.value.levelStats[currentLevel.value] = {
       cleared: true,
-      stars: Math.max(currentStats.stars || 0, currentStars)
+      stars: Math.max(currentStats.stars || 0, currentStars),
     };
-    
+
     const next = currentLevel.value + 1;
     if (next > playerProfile.value.highestUnlockedLevel) {
       playerProfile.value.highestUnlockedLevel = next;
@@ -100,19 +219,19 @@ const selectToken = (id) => {
 
 // Shop Action: Buy a token
 const buyToken = (tokenId) => {
-  const token = inventory.value.find(t => t.id === tokenId);
+  const token = inventory.value.find((t) => t.id === tokenId);
   if (token && coinBank.value >= token.cost) {
     coinBank.value -= token.cost;
     token.amount++;
-    
+
     // Track purchased tokens so they are not lost on Restart Level
-    if (tokenId === 'plus') initialPlusAmount.value++;
-    if (tokenId === 'minus') initialMinusAmount.value++;
-    if (tokenId === 'multiply') initialMultiplyAmount.value++;
-    
+    if (tokenId === "plus") initialPlusAmount.value++;
+    if (tokenId === "minus") initialMinusAmount.value++;
+    if (tokenId === "multiply") initialMultiplyAmount.value++;
+
     // Add to history so it's not lost on undo
-    moveHistory.value.forEach(historyState => {
-      const historyToken = historyState.inventory.find(t => t.id === tokenId);
+    moveHistory.value.forEach((historyState) => {
+      const historyToken = historyState.inventory.find((t) => t.id === tokenId);
       if (historyToken) {
         historyToken.amount++;
       }
@@ -139,51 +258,65 @@ const triggerAnimation = (r, c, delay = 0) => {
 const getAffectedCells = (gridState, r, c) => {
   const size = gridState.length;
   const targetCell = gridState[r][c];
-  
+
   let primaryTargets = [{ r, c }];
-  
+
   // Quantum mirroring logic
-  if (targetCell.type === 'quantum_a') {
+  if (targetCell.type === "quantum_a") {
     for (let ir = 0; ir < size; ir++) {
       for (let ic = 0; ic < size; ic++) {
-        if (gridState[ir][ic].type === 'quantum_b') primaryTargets.push({ r: ir, c: ic });
+        if (gridState[ir][ic].type === "quantum_b")
+          primaryTargets.push({ r: ir, c: ic });
       }
     }
-  } else if (targetCell.type === 'quantum_b') {
+  } else if (targetCell.type === "quantum_b") {
     for (let ir = 0; ir < size; ir++) {
       for (let ic = 0; ic < size; ic++) {
-        if (gridState[ir][ic].type === 'quantum_a') primaryTargets.push({ r: ir, c: ic });
+        if (gridState[ir][ic].type === "quantum_a")
+          primaryTargets.push({ r: ir, c: ic });
       }
     }
   }
-  
+
   let secondaryTargets = [];
-  primaryTargets.forEach(pt => {
+  primaryTargets.forEach((pt) => {
     const adjs = [
-      [pt.r - 1, pt.c], [pt.r + 1, pt.c],
-      [pt.r, pt.c - 1], [pt.r, pt.c + 1]
+      [pt.r - 1, pt.c],
+      [pt.r + 1, pt.c],
+      [pt.r, pt.c - 1],
+      [pt.r, pt.c + 1],
     ];
     adjs.forEach(([ar, ac]) => {
-      if (ar >= 0 && ar < size && ac >= 0 && ac < size && gridState[ar][ac].type !== 'void') {
+      if (
+        ar >= 0 &&
+        ar < size &&
+        ac >= 0 &&
+        ac < size &&
+        gridState[ar][ac].type !== "void"
+      ) {
         secondaryTargets.push({ r: ar, c: ac });
       }
     });
   });
-  
+
   return { primaryTargets, secondaryTargets };
 };
 
 // Applies the mathematical effect of a token to the grid
 const applyMove = (gridState, r, c, token, isReverse) => {
-  const { primaryTargets, secondaryTargets } = getAffectedCells(gridState, r, c);
-  
+  const { primaryTargets, secondaryTargets } = getAffectedCells(
+    gridState,
+    r,
+    c,
+  );
+
   // Apply Primary Effect
-  primaryTargets.forEach(pt => {
+  primaryTargets.forEach((pt) => {
     const cell = gridState[pt.r][pt.c];
-    if (token.id === 'multiply') {
+    if (token.id === "multiply") {
       if (isReverse) {
         // Reverse of a multiplier to 0 is any non-zero value
-        let randVal = Math.floor(Math.random() * 4) + 2; 
+        let randVal = Math.floor(Math.random() * 4) + 2;
         cell.value = (Math.random() > 0.5 ? 1 : -1) * randVal;
       } else {
         cell.value = 0;
@@ -193,16 +326,16 @@ const applyMove = (gridState, r, c, token, isReverse) => {
       cell.value += val;
     }
   });
-  
+
   // Apply Secondary (Ripple) Effect
-  secondaryTargets.forEach(st => {
+  secondaryTargets.forEach((st) => {
     const cell = gridState[st.r][st.c];
-    if (token.id === 'multiply') {
+    if (token.id === "multiply") {
       // Inverting the inversion is the same operation, so reverse is identical
       cell.value *= -1;
     } else {
       let val = token.secondary * (isReverse ? -1 : 1);
-      if (cell.type === 'inverter') val *= -1;
+      if (cell.type === "inverter") val *= -1;
       cell.value += val;
     }
   });
@@ -213,30 +346,36 @@ const applyToken = async (rowIndex, colIndex) => {
   await Haptics.impact({ style: ImpactStyle.Light });
 
   if (isWin.value) return; // Prevent moves after winning
-  if (grid.value[rowIndex][colIndex].type === 'void') return; // Ignore void cells
+  if (grid.value[rowIndex][colIndex].type === "void") return; // Ignore void cells
 
   const token = activeToken.value;
   if (!token || token.amount <= 0) return;
 
+  playSound(token.id === "multiply" ? "special" : "click");
+
   // Save current state to history BEFORE modifying
   moveHistory.value.push({
-    grid: grid.value.map(row => row.map(cell => ({ ...cell }))),
-    inventory: inventory.value.map(t => ({ ...t })),
-    activeTokenId: activeTokenId.value
+    grid: grid.value.map((row) => row.map((cell) => ({ ...cell }))),
+    inventory: inventory.value.map((t) => ({ ...t })),
+    activeTokenId: activeTokenId.value,
   });
 
-  const { primaryTargets, secondaryTargets } = getAffectedCells(grid.value, rowIndex, colIndex);
-  
+  const { primaryTargets, secondaryTargets } = getAffectedCells(
+    grid.value,
+    rowIndex,
+    colIndex,
+  );
+
   applyMove(grid.value, rowIndex, colIndex, token, false);
-  
+
   // Visual effects
-  primaryTargets.forEach(pt => triggerAnimation(pt.r, pt.c, 0));
-  secondaryTargets.forEach(st => triggerAnimation(st.r, st.c, 150));
+  primaryTargets.forEach((pt) => triggerAnimation(pt.r, pt.c, 0));
+  secondaryTargets.forEach((st) => triggerAnimation(st.r, st.c, 150));
 
   // Deduct the used token from inventory
   token.amount--;
   movesTaken.value++;
-  
+
   // Optionally auto-deselect if the token runs out
   if (token.amount === 0) {
     activeTokenId.value = null;
@@ -246,7 +385,7 @@ const applyToken = async (rowIndex, colIndex) => {
 // Undo the last move
 const undoMove = () => {
   if (moveHistory.value.length === 0 || isWin.value) return;
-  
+
   const lastState = moveHistory.value.pop();
   grid.value = lastState.grid;
   inventory.value = lastState.inventory;
@@ -255,17 +394,18 @@ const undoMove = () => {
 };
 
 // Procedural Scrambler to generate a level
-const generateLevel = () => {
+const generateLevel = (overrideSeed = null) => {
+  const randomizer = overrideSeed ? mulberry32(overrideSeed) : Math.random;
   let isLevelValid = false;
   let newGrid = [];
   let plusUsed = 0;
   let minusUsed = 0;
   let multiplyUsed = 0;
-  
+
   // Epoch Logic & Local Levels
   let epoch = 1;
   let localLevel = currentLevel.value;
-  
+
   if (currentLevel.value >= 75) {
     epoch = 5;
     localLevel = currentLevel.value - 74;
@@ -279,30 +419,34 @@ const generateLevel = () => {
     epoch = 2;
     localLevel = currentLevel.value - 14;
   }
-  
+
   // Calculate dynamic scaling parameters based on localLevel
   // Size starts at 3 and increases by 1 every 4 localLevels, capping at 7
-  const size = Math.min(7, 3 + Math.floor((localLevel - 1) / 4)); 
-  
+  const size = Math.min(7, 3 + Math.floor((localLevel - 1) / 4));
+
   // Mechanic Pool logic based on Epoch and Tutorial Phase
   let pool = [];
   let hasMultiplier = false;
-  
+
   if (epoch === 2) {
-    pool = ['void'];
+    pool = ["void"];
   } else if (epoch === 3) {
     if (localLevel <= 5) {
-      pool = ['inverter'];
+      pool = ["inverter"];
     } else {
-      const choices = [['inverter'], ['void'], ['inverter', 'void']];
-      pool = choices[Math.floor(Math.random() * choices.length)];
+      const choices = [["inverter"], ["void"], ["inverter", "void"]];
+      pool = choices[Math.floor(randomizer() * choices.length)];
     }
   } else if (epoch === 4) {
     if (localLevel <= 5) {
-      pool = ['quantum'];
+      pool = ["quantum"];
     } else {
-      const choices = [['quantum', 'inverter'], ['quantum', 'void'], ['quantum', 'inverter', 'void']];
-      pool = choices[Math.floor(Math.random() * choices.length)];
+      const choices = [
+        ["quantum", "inverter"],
+        ["quantum", "void"],
+        ["quantum", "inverter", "void"],
+      ];
+      pool = choices[Math.floor(randomizer() * choices.length)];
     }
   } else if (epoch === 5) {
     hasMultiplier = true;
@@ -310,73 +454,74 @@ const generateLevel = () => {
       pool = []; // Normal cells to practice 'x'
     } else {
       const choices = [
-        ['quantum', 'inverter'], 
-        ['quantum', 'void'], 
-        ['quantum', 'inverter', 'void'],
-        ['inverter', 'void'],
-        ['quantum']
+        ["quantum", "inverter"],
+        ["quantum", "void"],
+        ["quantum", "inverter", "void"],
+        ["inverter", "void"],
+        ["quantum"],
       ];
-      pool = choices[Math.floor(Math.random() * choices.length)];
+      pool = choices[Math.floor(randomizer() * choices.length)];
     }
   }
 
-  const hasVoids = pool.includes('void');
-  const hasInverters = pool.includes('inverter');
-  const hasQuantum = pool.includes('quantum');
+  const hasVoids = pool.includes("void");
+  const hasInverters = pool.includes("inverter");
+  const hasQuantum = pool.includes("quantum");
 
   let voidCount = 0;
   if (hasVoids) {
     // Max 15% of the board to keep it reasonable
     const maxObs = Math.floor(size * size * 0.15);
-    voidCount = Math.max(1, Math.min(maxObs, Math.floor(Math.random() * 4) + 1));
+    voidCount = Math.max(1, Math.min(maxObs, Math.floor(randomizer() * 4) + 1));
   }
-  
+
   let inverterCount = 0;
-  if (hasInverters) inverterCount = Math.max(1, Math.floor(Math.random() * 3) + 1); // 1 to 3
-  
+  if (hasInverters)
+    inverterCount = Math.max(1, Math.floor(randomizer() * 3) + 1); // 1 to 3
+
   let quantumCount = 0;
   if (hasQuantum) quantumCount = 1; // Exactly one pair
-  
+
   // Ensure we don't accidentally generate an already solved board
   while (!isLevelValid) {
-    newGrid = Array.from({ length: size }, (_, r) => 
+    newGrid = Array.from({ length: size }, (_, r) =>
       Array.from({ length: size }, (_, c) => ({
         id: `${r}-${c}`,
         value: 0,
-        type: 'normal'
-      }))
+        type: "normal",
+      })),
     );
-    
+
     // Distribute special cells
     const specialCells = [];
-    for (let i = 0; i < voidCount; i++) specialCells.push('void');
-    for (let i = 0; i < inverterCount; i++) specialCells.push('inverter');
+    for (let i = 0; i < voidCount; i++) specialCells.push("void");
+    for (let i = 0; i < inverterCount; i++) specialCells.push("inverter");
     if (quantumCount > 0) {
-      specialCells.push('quantum_a');
-      specialCells.push('quantum_b');
+      specialCells.push("quantum_a");
+      specialCells.push("quantum_b");
     }
-    
+
     let playableCellsCount = size * size;
-    
-    specialCells.forEach(type => {
+
+    specialCells.forEach((type) => {
       let r, c;
       do {
-        r = Math.floor(Math.random() * size);
-        c = Math.floor(Math.random() * size);
-      } while (newGrid[r][c].type !== 'normal');
-      
+        r = Math.floor(randomizer() * size);
+        c = Math.floor(randomizer() * size);
+      } while (newGrid[r][c].type !== "normal");
+
       newGrid[r][c].type = type;
-      if (type === 'void') playableCellsCount--;
+      if (type === "void") playableCellsCount--;
     });
-    
+
     // Scramble Depth scaling based on localLevel
     const baseScramble = Math.min(35, 2 + Math.floor(localLevel * 1.5));
     let scrambleDepth = Math.min(playableCellsCount, baseScramble);
-    
+
     if (localLevel <= 5) {
       scrambleDepth = 3;
     }
-    
+
     levelPar.value = scrambleDepth;
 
     plusUsed = 0;
@@ -386,46 +531,52 @@ const generateLevel = () => {
     for (let i = 0; i < scrambleDepth; i++) {
       let r, c;
       do {
-        r = Math.floor(Math.random() * size);
-        c = Math.floor(Math.random() * size);
-      } while (newGrid[r][c].type === 'void');
-      
+        r = Math.floor(randomizer() * size);
+        c = Math.floor(randomizer() * size);
+      } while (newGrid[r][c].type === "void");
+
       let tokenToUse;
       // Guarantee the multiplier is used by forcing it on the very first move if hasMultiplier is true
-      let attemptMultiply = hasMultiplier && (Math.random() < 0.25 || (multiplyUsed === 0 && i === 0));
-      
+      let attemptMultiply =
+        hasMultiplier &&
+        (randomizer() < 0.25 || (multiplyUsed === 0 && i === 0));
+
       if (attemptMultiply) {
         // Guarantee solvability: Reverse multiplication is only valid if target cell is exactly 0
         const { primaryTargets } = getAffectedCells(newGrid, r, c);
-        const canMultiply = primaryTargets.every(pt => newGrid[pt.r][pt.c].value === 0);
-        
+        const canMultiply = primaryTargets.every(
+          (pt) => newGrid[pt.r][pt.c].value === 0,
+        );
+
         if (canMultiply) {
-           tokenToUse = inventory.value.find(t => t.id === 'multiply');
-           multiplyUsed++;
+          tokenToUse = inventory.value.find((t) => t.id === "multiply");
+          multiplyUsed++;
         } else {
-           // Fallback to safe math
-           if (Math.random() > 0.5) {
-             tokenToUse = inventory.value.find(t => t.id === 'plus');
-             plusUsed++;
-           } else {
-             tokenToUse = inventory.value.find(t => t.id === 'minus');
-             minusUsed++;
-           }
+          // Fallback to safe math
+          if (randomizer() > 0.5) {
+            tokenToUse = inventory.value.find((t) => t.id === "plus");
+            plusUsed++;
+          } else {
+            tokenToUse = inventory.value.find((t) => t.id === "minus");
+            minusUsed++;
+          }
         }
-      } else if (Math.random() > 0.5) {
-        tokenToUse = inventory.value.find(t => t.id === 'plus');
+      } else if (randomizer() > 0.5) {
+        tokenToUse = inventory.value.find((t) => t.id === "plus");
         plusUsed++;
       } else {
-        tokenToUse = inventory.value.find(t => t.id === 'minus');
+        tokenToUse = inventory.value.find((t) => t.id === "minus");
         minusUsed++;
       }
 
       applyMove(newGrid, r, c, tokenToUse, true); // true for isReverse
     }
-    
+
     // Check if the board is actually scrambled
-    isLevelValid = !newGrid.every(row => row.every(cell => cell.type === 'void' || cell.value === 0));
-    
+    isLevelValid = !newGrid.every((row) =>
+      row.every((cell) => cell.type === "void" || cell.value === 0),
+    );
+
     // Guarantee that Epoch 5 actually uses a multiplier at least once to ensure puzzle integrity
     if (isLevelValid && hasMultiplier && multiplyUsed === 0) {
       isLevelValid = false;
@@ -434,22 +585,25 @@ const generateLevel = () => {
 
   // Update game state
   grid.value = newGrid;
-  
+
   // Save initial state for the 'Restart Level' feature
-  initialGridState.value = newGrid.map(row => row.map(cell => ({ ...cell })));
-  
+  initialGridState.value = newGrid.map((row) =>
+    row.map((cell) => ({ ...cell })),
+  );
+
   initialPlusAmount.value = plusUsed + 1; // Give 1 extra for error room
   initialMinusAmount.value = minusUsed + 1; // Give 1 extra for error room
   initialMultiplyAmount.value = multiplyUsed + (hasMultiplier ? 1 : 0);
-  
-  inventory.value.find(t => t.id === 'plus').amount = initialPlusAmount.value;
-  inventory.value.find(t => t.id === 'minus').amount = initialMinusAmount.value;
-  
-  const multiplyToken = inventory.value.find(t => t.id === 'multiply');
+
+  inventory.value.find((t) => t.id === "plus").amount = initialPlusAmount.value;
+  inventory.value.find((t) => t.id === "minus").amount =
+    initialMinusAmount.value;
+
+  const multiplyToken = inventory.value.find((t) => t.id === "multiply");
   if (multiplyToken) {
     multiplyToken.amount = initialMultiplyAmount.value;
   }
-  
+
   activeTokenId.value = null;
   moveHistory.value = [];
   animatingCells.value = {};
@@ -463,20 +617,39 @@ generateLevel();
 const selectLevel = (lvl) => {
   currentLevel.value = lvl;
   generateLevel();
-  gameState.value = 'playing';
+  gameState.value = "playing";
 };
 
 const nextLevel = () => {
-  currentLevel.value++;
-  generateLevel();
+  if (isDailyMode.value) {
+    isDailyMode.value = false;
+    gameState.value = "menu"; // Send them back to menu after winning the daily
+  } else {
+    currentLevel.value++;
+    generateLevel();
+  }
+};
+
+const startDailyChallenge = () => {
+  isDailyMode.value = true;
+
+  // Force the Daily Challenge to always be a Level 60 difficulty
+  // (Epoch 4: 6x6 grid, Quantums, Inverters, high scramble)
+  currentLevel.value = 60;
+
+  generateLevel(getDailySeed());
+  gameState.value = "playing";
 };
 
 const resetLevel = () => {
-  grid.value = initialGridState.value.map(row => row.map(cell => ({ ...cell })));
-  inventory.value.find(t => t.id === 'plus').amount = initialPlusAmount.value;
-  inventory.value.find(t => t.id === 'minus').amount = initialMinusAmount.value;
-  
-  const multiplyToken = inventory.value.find(t => t.id === 'multiply');
+  grid.value = initialGridState.value.map((row) =>
+    row.map((cell) => ({ ...cell })),
+  );
+  inventory.value.find((t) => t.id === "plus").amount = initialPlusAmount.value;
+  inventory.value.find((t) => t.id === "minus").amount =
+    initialMinusAmount.value;
+
+  const multiplyToken = inventory.value.find((t) => t.id === "multiply");
   if (multiplyToken) {
     multiplyToken.amount = initialMultiplyAmount.value;
   }
@@ -489,13 +662,17 @@ const resetLevel = () => {
 };
 
 const rerollLevel = () => {
-  generateLevel();
+  if (isDailyMode.value) {
+    generateLevel(getDailySeed()); // Regenerates the exact same daily board
+  } else {
+    generateLevel();
+  }
 };
 
 // Global Developer Cheat
-if (typeof window !== 'undefined') {
+if (typeof window !== "undefined") {
   window.dev_setLevel = (level) => {
-    if (typeof level === 'number' && level > 0) {
+    if (typeof level === "number" && level > 0) {
       currentLevel.value = level;
       if (level > playerProfile.value.highestUnlockedLevel) {
         playerProfile.value.highestUnlockedLevel = level;
@@ -503,155 +680,226 @@ if (typeof window !== 'undefined') {
       generateLevel();
       console.log(`Successfully skipped to Level ${level}!`);
     } else {
-      console.error('Please provide a valid level number greater than 0.');
+      console.error("Please provide a valid level number greater than 0.");
     }
+  };
+
+  window.dev_winLevel = () => {
+    grid.value.forEach(row => {
+      row.forEach(cell => {
+        if (cell.type !== 'void') cell.value = 0;
+      });
+    });
+    console.log('Level auto-completed! The win state should now trigger.');
   };
 }
 </script>
 
 <template>
   <div class="game-container">
-    <!-- Title Screen -->
-    <div v-if="gameState === 'menu'" class="title-screen">
-      <h1>Equilibrium</h1>
-      <button class="start-btn" @click="gameState = 'levelSelect'">Start Game</button>
-    </div>
-
-    <!-- Level Select -->
-    <div v-if="gameState === 'levelSelect'" class="level-select-wrapper">
-      <header>
-        <h1>Select Level</h1>
-      </header>
-      <div class="level-grid">
-        <button
-          v-for="lvl in reversedLevels"
-          :key="lvl"
-          class="level-btn"
-          :class="{ cleared: playerProfile.levelStats[lvl]?.cleared }"
-          @click="selectLevel(lvl)"
-        >
-          <span class="lvl-number">Level {{ lvl }}</span>
-          <span class="lvl-stars" v-if="playerProfile.levelStats[lvl]?.cleared">[{{ '⭐'.repeat(playerProfile.levelStats[lvl]?.stars || 0) }}{{ '☆'.repeat(3 - (playerProfile.levelStats[lvl]?.stars || 0)) }}]</span>
+    <Transition name="page" mode="out-in">
+      <div v-if="gameState === 'menu'" class="title-screen">
+        <h1>Equilibrium</h1>
+        <button class="start-btn" @click="gameState = 'levelSelect'">
+          Start Game
+        </button>
+        <button class="start-btn daily-btn" @click="startDailyChallenge">
+          Daily Challenge 📅
+          <span v-if="playerProfile.daily?.streak > 0" style="font-size: 1rem; display: block; color: #ffd700; margin-top: 0.2rem;">🔥 Streak: {{ playerProfile.daily?.streak }}</span>
         </button>
       </div>
-      <button class="back-btn" @click="gameState = 'menu'">Back to Menu</button>
-    </div>
 
-    <!-- Game UI -->
-    <div v-if="gameState === 'playing'" class="game-ui-wrapper">
-      <div class="app-bar">
-        <button class="quit-btn" @click="gameState = 'levelSelect'">⬅️ Map</button>
-        <div class="coin-bank">
-          <span class="coin-icon">🪙</span>
-          {{ coinBank }}
-        </div>
-      </div>
-      <header>
-        <p v-if="currentLevel <= 10">Balance the grid. Make every cell equal to 0.</p>
-        <div class="level-indicator">
-          Level {{ currentLevel }}
-          <span class="par-indicator"> | Moves: {{ movesTaken }} / Par: {{ levelPar }}</span>
-        </div>
-      </header>
-
-      <!-- Win State Overlay -->
-      <div v-if="isWin" class="win-message">
-        <h2>Level Complete!</h2>
-        <div class="stars-display">
-          {{ '⭐'.repeat(earnedStars) }}{{ '☆'.repeat(3 - earnedStars) }}
-        </div>
-        <p>Perfect harmony achieved.</p>
-        <p class="stats-text">Moves: {{ movesTaken }} / Par: {{ levelPar }}</p>
-        <div class="reward">
-          <span class="reward-text">+{{ earnedCoins }} Coins!</span>
-        </div>
-        <button @click="nextLevel">Next Level</button>
-      </div>
-
-      <div class="panels-container">
-        <!-- Inventory UI -->
-        <div class="inventory">
-          <div class="tokens">
-            <button
-              v-for="token in visibleInventory"
-              :key="token.id"
-              class="token-btn"
-              :class="{ active: activeTokenId === token.id, disabled: token.amount === 0 }"
-              @click="selectToken(token.id)"
-              :disabled="token.amount === 0"
+      <div v-else-if="gameState === 'levelSelect'" class="level-select-wrapper">
+        <header>
+          <h1>Select Level</h1>
+        </header>
+        <div class="level-grid">
+          <button
+            v-for="lvl in reversedLevels"
+            :key="lvl"
+            class="level-btn"
+            :class="{ cleared: playerProfile.levelStats[lvl]?.cleared }"
+            @click="selectLevel(lvl)"
+          >
+            <span class="lvl-number">Level {{ lvl }}</span>
+            <span
+              class="lvl-stars"
+              v-if="playerProfile.levelStats[lvl]?.cleared"
+              >[{{ "⭐".repeat(playerProfile.levelStats[lvl]?.stars || 0)
+              }}{{
+                "☆".repeat(3 - (playerProfile.levelStats[lvl]?.stars || 0))
+              }}]</span
             >
-              <span class="token-name">{{ token.name }}</span>
-              <span class="token-amount">x{{ token.amount }}</span>
-            </button>
+          </button>
+        </div>
+        <button class="back-btn" @click="gameState = 'menu'">
+          Back to Menu
+        </button>
+      </div>
+
+      <div v-else-if="gameState === 'playing'" class="game-ui-wrapper">
+        <div class="app-bar">
+          <button
+            class="quit-btn"
+            @click="
+              gameState = 'levelSelect';
+              isDailyMode = false;
+            "
+          >
+            ⬅️ Map
+          </button>
+          <div class="coin-bank">
+            <span class="coin-icon">🪙</span>
+            {{ coinBank }}
           </div>
         </div>
-      </div>
 
-      <!-- Shop Modal Overlay -->
-      <div v-if="showShop" class="shop-modal-overlay">
-        <div class="shop-modal-content">
-          <div class="shop-modal-header">
-            <h2>Shop</h2>
-            <button class="close-shop-btn" @click="showShop = false">Close</button>
-          </div>
-          <div class="shop-items">
-            <button
-              v-for="token in visibleInventory"
-              :key="'shop-' + token.id"
-              class="shop-btn"
-              @click="buyToken(token.id)"
-              :disabled="coinBank < token.cost"
+        <header>
+          <p v-if="currentLevel <= 10">
+            Balance the grid. Make every cell equal to 0.
+          </p>
+          <div class="level-indicator">
+            <span v-if="isDailyMode"
+              >Daily Challenge: {{ formattedDailyDate }}</span
             >
-              <span class="shop-title">Buy {{ token.name.split(' ')[0] }}</span>
-              <span class="shop-cost">{{ token.cost }} 🪙</span>
-            </button>
+            <span v-else>Level {{ currentLevel }}</span>
+            <span class="par-indicator">
+              Moves: {{ movesTaken }} / Par: {{ levelPar }}</span>
           </div>
+        </header>
+
+        <div v-if="isWin" class="win-message">
+          <h2>Level Complete!</h2>
+          <div class="stars-display">
+            {{ "⭐".repeat(earnedStars) }}{{ "☆".repeat(3 - earnedStars) }}
+          </div>
+          <p>Perfect harmony achieved.</p>
+          <p class="stats-text">
+            Moves: {{ movesTaken }} / Par: {{ levelPar }}
+          </p>
+          <div class="reward">
+            <span class="reward-text">+{{ earnedCoins }} Coins!</span>
+          </div>
+          <button @click="nextLevel">Next Level</button>
         </div>
-      </div>
 
-      <!-- The Grid -->
-      <div class="grid-wrapper">
-        <div class="grid" :class="{ 'game-won': isWin }" :style="{ gridTemplateColumns: `repeat(${grid.length}, 1fr)` }">
-          <template v-for="(row, rIndex) in grid" :key="rIndex">
-            <div
-              v-for="(cell, cIndex) in row"
-              :key="cell.id"
-              class="cell"
-              :class="{
-                'void': cell.type === 'void',
-                'inverter': cell.type === 'inverter',
-                'quantum': cell.type === 'quantum_a' || cell.type === 'quantum_b',
-                'zero': cell.value === 0 && cell.type !== 'void',
-                'positive': cell.value > 0 && cell.type !== 'void',
-                'negative': cell.value < 0 && cell.type !== 'void',
-                'animating': animatingCells[cell.id]
-              }"
-              @click="cell.type !== 'void' ? applyToken(rIndex, cIndex) : null"
-            >
-              {{ cell.type !== 'void' ? cell.value : '' }}
-              <div v-if="cell.type === 'inverter'" class="inverter-icon">🔃</div>
-              <div v-if="cell.type === 'quantum_a' || cell.type === 'quantum_b'" class="quantum-icon">⚛️</div>
+        <div class="tokens">
+          <button
+            v-for="token in visibleInventory"
+            :key="token.id"
+            class="token-btn"
+            :class="{
+              active: activeTokenId === token.id,
+              disabled: token.amount === 0,
+            }"
+            @click="selectToken(token.id)"
+            :disabled="token.amount === 0"
+          >
+            <span class="token-name">{{ token.name }}</span>
+            <span class="token-amount">x{{ token.amount }}</span>
+          </button>
+        </div>
+
+        <Transition name="modal">
+          <div v-if="showShop" class="shop-modal-overlay">
+            <div class="shop-modal-content">
+              <div class="shop-modal-header">
+                <h2>Shop</h2>
+                <button class="close-shop-btn" @click="showShop = false">
+                  Close
+                </button>
+              </div>
+              <div class="shop-items">
+                <button
+                  v-for="token in visibleInventory"
+                  :key="'shop-' + token.id"
+                  class="shop-btn"
+                  @click="buyToken(token.id)"
+                  :disabled="coinBank < token.cost"
+                >
+                  <span class="shop-title"
+                    >Buy {{ token.name.split(" ")[0] }}</span
+                  >
+                  <span class="shop-cost">{{ token.cost }} 🪙</span>
+                </button>
+              </div>
             </div>
-          </template>
+          </div>
+        </Transition>
+
+        <div class="grid-wrapper">
+          <div
+            class="grid"
+            :class="{ 'game-won': isWin }"
+            :style="{ gridTemplateColumns: `repeat(${grid.length}, 1fr)` }"
+          >
+            <template v-for="(row, rIndex) in grid" :key="rIndex">
+              <div
+                v-for="(cell, cIndex) in row"
+                :key="cell.id"
+                class="cell"
+                :class="{
+                  void: cell.type === 'void',
+                  inverter: cell.type === 'inverter',
+                  quantum:
+                    cell.type === 'quantum_a' || cell.type === 'quantum_b',
+                  zero: cell.value === 0 && cell.type !== 'void',
+                  positive: cell.value > 0 && cell.type !== 'void',
+                  negative: cell.value < 0 && cell.type !== 'void',
+                  animating: animatingCells[cell.id],
+                }"
+                @click="
+                  cell.type !== 'void' ? applyToken(rIndex, cIndex) : null
+                "
+              >
+                {{ cell.type !== "void" ? cell.value : "" }}
+                <div v-if="cell.type === 'inverter'" class="inverter-icon">
+                  🔃
+                </div>
+                <div
+                  v-if="cell.type === 'quantum_a' || cell.type === 'quantum_b'"
+                  class="quantum-icon"
+                >
+                  ⚛️
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button
+            class="control-btn"
+            @click="undoMove"
+            :disabled="moveHistory.length === 0 || isWin"
+          >
+            ↩️ Undo
+          </button>
+          <button
+            class="control-btn restart"
+            @click="resetLevel"
+            :disabled="isWin"
+          >
+            🔄 Reset
+          </button>
+          <button
+            v-if="!isDailyMode"
+            class="control-btn reroll"
+            @click="rerollLevel"
+            :disabled="isWin"
+          >
+            🎲 Scrap
+          </button>
+          <button
+            class="control-btn shop-toggle"
+            @click="showShop = true"
+            :disabled="isWin"
+          >
+            🛒 Shop
+          </button>
         </div>
       </div>
-
-      <!-- Control Actions -->
-      <div class="controls">
-        <button class="control-btn" @click="undoMove" :disabled="moveHistory.length === 0 || isWin">
-          ↩️ Undo
-        </button>
-        <button class="control-btn restart" @click="resetLevel" :disabled="isWin">
-          🔄 Reset
-        </button>
-        <button class="control-btn reroll" @click="rerollLevel" :disabled="isWin">
-          🎲 Scrap
-        </button>
-        <button class="control-btn shop-btn-control" @click="showShop = true">
-          🛒 Shop
-        </button>
-      </div>
-    </div>
+    </Transition>
   </div>
 </template>
 
@@ -660,7 +908,11 @@ if (typeof window !== 'undefined') {
   display: flex;
   flex-direction: column;
   align-items: center;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family:
+    "Inter",
+    system-ui,
+    -apple-system,
+    sans-serif;
   background-color: #121212;
   color: #e0e0e0;
   min-height: 100vh;
@@ -683,7 +935,7 @@ header {
 
 h1 {
   font-size: clamp(1.8rem, 6vw, 3rem);
-  line-height:1.2;
+  line-height: 1.2;
   margin: 0;
   background: linear-gradient(45deg, #00d2ff 0%, #3a7bd5 100%);
   -webkit-background-clip: text;
@@ -720,6 +972,10 @@ p {
   font-weight: bold;
   text-transform: uppercase;
   letter-spacing: 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
 }
 
 .par-indicator {
@@ -748,7 +1004,9 @@ p {
   border-radius: 8px;
   cursor: pointer;
   font-weight: bold;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition:
+    transform 0.2s,
+    box-shadow 0.2s;
   min-height: 50px;
 }
 
@@ -767,7 +1025,9 @@ p {
   cursor: pointer;
   font-weight: bold;
   box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition:
+    transform 0.2s,
+    box-shadow 0.2s;
   min-height: 50px;
 }
 
@@ -798,7 +1058,8 @@ p {
   justify-content: center;
 }
 
-.token-btn, .shop-btn {
+.token-btn,
+.shop-btn {
   background: #2a2a2a;
   border: 2px solid #333;
   border-radius: 8px;
@@ -860,7 +1121,9 @@ p {
   padding: 2rem;
   border-radius: 16px;
   border: 1px solid #ffd700;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8), 0 0 20px rgba(255, 215, 0, 0.2);
+  box-shadow:
+    0 10px 40px rgba(0, 0, 0, 0.8),
+    0 0 20px rgba(255, 215, 0, 0.2);
   width: 90%;
   max-width: 500px;
   text-align: center;
@@ -943,10 +1206,19 @@ p {
   display: grid;
   gap: clamp(4px, 1vw, 8px);
   background: #1e1e1e;
+  background-image: radial-gradient(
+    rgba(255, 255, 255, 0.05) 2px,
+    transparent 2px
+  );
+  background-size: 14px 14px;
   padding: clamp(8px, 2vw, 16px);
   border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
-  transition: filter 0.5s ease, transform 0.5s ease;
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  transition:
+    filter 0.5s ease,
+    transform 0.5s ease;
 }
 
 .grid.game-won {
@@ -975,7 +1247,7 @@ p {
 }
 
 .cell::after {
-  content: '';
+  content: "";
   position: absolute;
   top: 0;
   left: 0;
@@ -1042,11 +1314,20 @@ p {
 }
 
 @keyframes quantumPulse {
-  0% { box-shadow: 0 0 5px rgba(59, 130, 246, 0.4), inset 0 0 5px rgba(59, 130, 246, 0.4); }
-  100% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.8), inset 0 0 15px rgba(59, 130, 246, 0.6); }
+  0% {
+    box-shadow:
+      0 0 5px rgba(59, 130, 246, 0.4),
+      inset 0 0 5px rgba(59, 130, 246, 0.4);
+  }
+  100% {
+    box-shadow:
+      0 0 20px rgba(59, 130, 246, 0.8),
+      inset 0 0 15px rgba(59, 130, 246, 0.6);
+  }
 }
 
-.inverter-icon, .quantum-icon {
+.inverter-icon,
+.quantum-icon {
   position: absolute;
   top: 4px;
   right: 4px;
@@ -1086,7 +1367,9 @@ p {
   border: 1px solid #00d2ff;
   text-align: center;
   z-index: 10;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px rgba(0, 210, 255, 0.2);
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.8),
+    0 0 30px rgba(0, 210, 255, 0.2);
   backdrop-filter: blur(10px);
   animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
 }
@@ -1165,15 +1448,17 @@ p {
 }
 
 .controls {
-  margin-top: 2rem;
+  margin-top: 1rem; /* Reduced from 2rem */
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: clamp(0.25rem, 1.5vw, 0.5rem);
+  gap: clamp(0.5rem, 2vw, 1rem); /* Slightly larger, fluid gap */
   width: 100%;
+  padding: 0;
 }
 
 .control-btn {
+  flex: 1 1 calc(25% - 1rem); /* This makes them stretch evenly! */
   background: #2a2a2a;
   border: 1px solid #555;
   color: #e0e0e0;
@@ -1223,7 +1508,7 @@ p {
 
 .title-screen h1 {
   font-size: clamp(2.5rem, 10vw, 4.5rem);
-  line-height:1.2;
+  line-height: 1.2;
   margin-bottom: 1rem;
 }
 
@@ -1323,5 +1608,56 @@ p {
 
 .back-btn:hover {
   background: #555;
+}
+
+/* --- VUE TRANSITION PHYSICS --- */
+
+/* Page Transitions */
+.page-enter-active,
+.page-leave-active {
+  transition: all 0.25s ease-out;
+}
+.page-enter-from,
+.page-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+/* Modal Overlay Fade (The dark background) */
+.modal-enter-active,
+.modal-leave-active {
+  transition: opacity 0.25s ease;
+}
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+
+/* Modal Content Scale (The springy box) */
+.modal-enter-active .shop-modal-content,
+.modal-leave-active .shop-modal-content {
+  /* Using a custom bezier curve for a slight "bounce" effect */
+  transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+.modal-enter-from .shop-modal-content,
+.modal-leave-to .shop-modal-content {
+  transform: scale(0.8);
+}
+
+/* App Bar & Token Layout Fixes */
+.app-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: clamp(0.25rem, 1.5vw, 0.5rem) clamp(0.5rem, 2vw, 1rem);
+  margin-bottom: 1rem;
+}
+
+.tokens {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  margin-bottom: 1.5rem;
 }
 </style>
